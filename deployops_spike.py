@@ -1,6 +1,6 @@
 """
-Spike LangGraph 1.0 - DeployOps Agent (IU Lotus)
-=================================================
+Spike LangGraph 1.0 - DeployOps Agent (IU Lotus) - versao interativa
+====================================================================
 
 Objetivo do spike: provar o padrao minimo de human-in-the-loop que sustenta
 a arquitetura DeployOps -> "o agente PREPARA o plano de deploy, um humano APROVA,
@@ -11,24 +11,26 @@ Mapeamento direto ao diagrama de arquitetura (camada agentic):
     node 2  human_approval       -> "Aprovacao humana / review do plano" (o losango)
     node 3  dispatch_deploy      -> SDK Wrapper seguro (aqui em modo dry-run/mock)
 
+NESTA VERSAO o gate humano e INTERATIVO: o grafo pausa de verdade e pergunta
+no terminal se aprova ou nao. Use para demonstrar ao vivo na reuniao.
+
 IMPORTANTE (escopo de pesquisa / copiloto, nao executor autonomo):
 - Este spike NAO chama lotus.deploy_project nem nenhuma API real da IU Lotus.
 - O "despacho" e simulado (dry-run). A ligacao com o SDK real fica para depois,
   sempre atras do SDK Wrapper com allowlist e somente em env="analytics" no MVP.
-- Os nomes de campos (story_id, account_aws_number etc.) sao ilustrativos e devem
-  ser conferidos na fonte oficial antes de qualquer uso operacional.
+- Os nomes de campos sao ilustrativos e devem ser conferidos na fonte oficial.
 
 Requisitos:
     pip install "langgraph>=1.0"
 
-Como rodar:
+Como rodar (demo ao vivo):
     python deployops_spike.py
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal, Optional, TypedDict
+from typing import Literal, TypedDict
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
@@ -203,53 +205,73 @@ def build_graph():
 
 
 # ---------------------------------------------------------------------------
-# Demonstracao: fluxo aprovado e fluxo rejeitado
+# Demonstracao INTERATIVA - gate humano ao vivo no terminal
 # ---------------------------------------------------------------------------
-def _run_demo(request: dict, human_decision: dict, thread_id: str) -> None:
+SAMPLE_REQUEST = {
+    "model_name": "classificacao_propensao",
+    "env": "analytics",          # MVP: apenas sandbox analytics
+    "repo_name": "itau-mr7-infra-meu-modelo",
+    "story_id": "",              # vazio fora de prod, e o esperado
+}
+
+
+def _print_plan_for_review(payload: dict) -> None:
+    """Mostra o plano de forma legivel para o revisor humano na sala."""
+    plan = payload["deploy_plan"]
+    print("\n" + "=" * 64)
+    print("  O AGENTE PREPAROU UM PLANO DE DEPLOY - AGUARDANDO REVISAO HUMANA")
+    print("=" * 64)
+    print(f"  modelo       : {plan.get('model_name')}")
+    print(f"  ambiente     : {plan.get('env')}")
+    print(f"  repositorio  : {plan.get('repo_name')}")
+    print(f"  story_id     : {plan.get('story_id') or '(vazio - esperado fora de prod)'}")
+    print(f"  validacao OK : {payload['validation_passed']}")
+    if payload["validation_errors"]:
+        print(f"  erros        : {payload['validation_errors']}")
+    print("-" * 64)
+
+
+def run_interactive() -> None:
     graph = build_graph()
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {"configurable": {"thread_id": "demo-interativa"}}
 
-    print(f"\n=== Thread '{thread_id}' | decisao simulada: {human_decision['decision']} ===")
+    # 1a invocacao: roda ate o interrupt e PAUSA de verdade.
+    first = graph.invoke({"deploy_request": SAMPLE_REQUEST}, config=config)
 
-    # 1a invocacao: roda ate o interrupt e pausa.
-    first = graph.invoke({"deploy_request": request}, config=config)
+    if "__interrupt__" not in first:
+        print("Fluxo terminou sem pausa - verifique as validacoes.")
+        return
 
-    if "__interrupt__" in first:
-        payload = first["__interrupt__"][0].value
-        print("PAUSOU para aprovacao humana. Plano em revisao:")
-        print(f"  validacao_ok = {payload['validation_passed']}")
-        print(f"  erros        = {payload['validation_errors']}")
-        print(f"  plano        = {payload['deploy_plan']}")
+    payload = first["__interrupt__"][0].value
+    _print_plan_for_review(payload)
 
-    # 2a invocacao: humano responde -> grafo resume do node de aprovacao.
-    final = graph.invoke(Command(resume=human_decision), config=config)
+    # >>> GATE HUMANO AO VIVO <<<
+    # Aqui o grafo esta congelado no checkpointer, esperando a decisao.
+    answer = input("  Aprovar este deploy? (s/n): ").strip().lower()
+    approved = answer in ("s", "sim", "y", "yes")
+    reviewer = input("  Seu nome (revisor): ").strip() or "desconhecido"
+    notes = input("  Observacao (enter para pular): ").strip()
 
-    print(f"Decisao registrada: {final.get('approval_decision')} por {final.get('approval_reviewer')}")
+    decision = {
+        "decision": "approved" if approved else "rejected",
+        "reviewer": reviewer,
+        "notes": notes,
+    }
+
+    # 2a invocacao: retoma o grafo do node de aprovacao com a decisao digitada agora.
+    final = graph.invoke(Command(resume=decision), config=config)
+
+    print("\n" + "=" * 64)
+    print(f"  DECISAO: {final.get('approval_decision', '').upper()} por {final.get('approval_reviewer')}")
     if final.get("deploy_result"):
-        print(f"Resultado do despacho (dry-run): {final['deploy_result']}")
+        r = final["deploy_result"]
+        print(f"  DESPACHO ({r['mode']}): {r['status']} em env={r['env']}")
+        print("  (dry-run - NENHUM deploy real foi executado)")
     else:
-        print("Nenhum despacho (fluxo encerrado pela rejeicao).")
-    print(f"Registros de auditoria: {len(final.get('audit_log', []))}")
+        print("  NENHUM DESPACHO - fluxo encerrado pela rejeicao do revisor.")
+    print(f"  Registros de auditoria gravados: {len(final.get('audit_log', []))}")
+    print("=" * 64)
 
 
 if __name__ == "__main__":
-    sample_request = {
-        "model_name": "classificacao_propensao",
-        "env": "analytics",          # MVP: apenas sandbox analytics
-        "repo_name": "itau-mr7-infra-meu-modelo",
-        "story_id": "",              # vazio fora de prod, e o esperado
-    }
-
-    # Cenario 1: humano aprova -> despacho (dry-run) acontece.
-    _run_demo(
-        request=sample_request,
-        human_decision={"decision": "approved", "reviewer": "yago", "notes": "ok analytics"},
-        thread_id="demo-aprovado",
-    )
-
-    # Cenario 2: humano rejeita -> grafo encerra sem despachar nada.
-    _run_demo(
-        request=sample_request,
-        human_decision={"decision": "rejected", "reviewer": "yago", "notes": "rever query"},
-        thread_id="demo-rejeitado",
-    )
+    run_interactive()
