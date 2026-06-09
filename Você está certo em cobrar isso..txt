@@ -1,0 +1,1198 @@
+Abaixo está a **versão completa corrigida**, considerando tudo que ajustamos:
+
+1. Você está dentro do repositório existente do **IU Lotus SDK**.
+2. Pelas imagens, o repo já usa **Poetry** (`pyproject.toml`, `poetry.lock`, badge `poetry 2.1.1`, teste com `poetry run pytest`).
+3. Como não sabemos tudo que existe em `src`, `scripts` e outros diretórios do SDK, o trabalho do agente deve ficar isolado.
+4. A estrutura correta será `agents/deploy_agent/`.
+5. A atualização do RAG será semanal e também manual via GitHub Actions.
+6. O índice RAG será gerado com chunks, embeddings e manifest de auditoria.
+
+---
+
+# 1. Decisão final
+
+Use esta estrutura:
+
+```text
+agents/
+  deploy_agent/
+    README.md
+    pyproject.toml
+    poetry.lock
+
+    configs/
+      rag_sources.yml
+
+    scripts/
+      update_rag_index.py
+      query_rag_index.py
+
+    src/
+      deploy_agent_rag/
+        __init__.py
+        indexer.py
+        query.py
+
+    data/
+      rag_index/
+        chunks.jsonl
+        embeddings.npy
+        manifest.json
+
+    tests/
+
+.github/
+  workflows/
+    update-deploy-agent-rag-index.yml
+```
+
+## Por que essa é a melhor opção
+
+| Decisão                             | Motivo                                                         |
+| ----------------------------------- | -------------------------------------------------------------- |
+| `agents/deploy_agent/`              | Mantém seu trabalho isolado do SDK existente                   |
+| Poetry                              | Segue o padrão visto no README e nos arquivos do repo          |
+| `data/rag_index/` dentro do agente  | Mantém chunks, vetores e manifest próximos do código do agente |
+| `.github/workflows/` fora do agente | Obrigatório, porque o GitHub só lê workflows nesse diretório   |
+| Não mexer em `pyproject.toml` raiz  | Evita quebrar o SDK existente                                  |
+| Não usar `venv` manual              | Evita fugir do padrão do repo                                  |
+
+---
+
+# 2. Conferir a branch
+
+Se você já criou a branch, confira:
+
+```bat
+git branch --show-current
+```
+
+O esperado é:
+
+```text
+feature/deploy-agent-foundation
+```
+
+Se ainda não criou, rode:
+
+```bat
+git status
+git fetch origin
+git switch develop
+git pull origin develop
+git switch -c feature/deploy-agent-foundation
+```
+
+Se `develop` não existir ou der erro:
+
+```bat
+git switch main
+git pull origin main
+git switch -c feature/deploy-agent-foundation
+```
+
+---
+
+# 3. Limpar arquivos criados pela versão anterior, se existirem
+
+Só rode isto se você criou os arquivos da versão anterior fora de `agents/deploy_agent/`.
+
+```bat
+if exist configs\deploy_agent rmdir /s /q configs\deploy_agent
+if exist scripts\rag rmdir /s /q scripts\rag
+if exist src\deploy_agent_rag rmdir /s /q src\deploy_agent_rag
+if exist data\deploy_agent_rag_index rmdir /s /q data\deploy_agent_rag_index
+if exist requirements-rag.txt del requirements-rag.txt
+if exist agents\deploy_agent\.venv-rag rmdir /s /q agents\deploy_agent\.venv-rag
+if exist agents\deploy_agent\requirements-rag.txt del agents\deploy_agent\requirements-rag.txt
+```
+
+Se você não criou nada disso, pule.
+
+---
+
+# 4. Criar a estrutura do agente
+
+Rode no `cmd`, dentro do repositório do SDK:
+
+```bat
+mkdir agents 2>nul
+mkdir agents\deploy_agent 2>nul
+mkdir agents\deploy_agent\configs 2>nul
+mkdir agents\deploy_agent\scripts 2>nul
+mkdir agents\deploy_agent\src 2>nul
+mkdir agents\deploy_agent\src\deploy_agent_rag 2>nul
+mkdir agents\deploy_agent\data 2>nul
+mkdir agents\deploy_agent\data\rag_index 2>nul
+mkdir agents\deploy_agent\tests 2>nul
+type nul > agents\deploy_agent\src\deploy_agent_rag\__init__.py
+```
+
+---
+
+# 5. Criar README do agente
+
+Rode:
+
+```bat
+notepad agents\deploy_agent\README.md
+```
+
+Cole:
+
+```md
+# Deploy Agent
+
+Área de desenvolvimento do agente de deploy da IU Lotus.
+
+Este diretório concentra os componentes em construção relacionados ao agente de deploy, incluindo:
+
+- ingestão da base de conhecimento;
+- indexação RAG;
+- geração de embeddings;
+- scripts de atualização;
+- testes locais de recuperação;
+- futuras ferramentas e integrações do agente.
+
+A estrutura foi isolada para evitar interferência no SDK existente enquanto o agente ainda está em fase de PoC, validação e evolução arquitetural.
+```
+
+Salve e feche.
+
+---
+
+# 6. Criar `pyproject.toml` com Poetry
+
+Rode:
+
+```bat
+notepad agents\deploy_agent\pyproject.toml
+```
+
+Cole:
+
+```toml
+[tool.poetry]
+name = "deploy-agent"
+version = "0.1.0"
+description = "Deploy agent RAG foundation for IU Lotus SDK"
+authors = ["IU Lotus"]
+readme = "README.md"
+packages = [
+    { include = "deploy_agent_rag", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.12"
+PyYAML = ">=6.0.1,<7"
+numpy = ">=1.26,<3"
+sentence-transformers = ">=3.0.1,<4"
+tqdm = ">=4.66,<5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<9"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+```
+
+Salve e feche.
+
+## Por que `>=3.9,<3.12`
+
+Nas imagens, o README mostra suporte/teste para:
+
+```text
+Python 3.9
+Python 3.10
+Python 3.11
+```
+
+Então mantemos esse range.
+
+---
+
+# 7. Criar configuração dos dois repositórios de documentação
+
+Rode:
+
+```bat
+notepad agents\deploy_agent\configs\rag_sources.yml
+```
+
+Cole:
+
+```yaml
+embedding:
+  model_name: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  batch_size: 32
+
+chunking:
+  chunk_size: 1200
+  chunk_overlap: 200
+
+output:
+  index_dir: data/rag_index
+
+repositories:
+  - name: public_docs
+    url: https://github.com/itau-corp/COLOQUE_AQUI_O_REPO_1.git
+    branch: main
+    include:
+      - "**/*.md"
+      - "**/*.mdx"
+      - "**/*.txt"
+      - "**/*.yml"
+      - "**/*.yaml"
+      - "**/*.json"
+
+  - name: internal_docs
+    url: https://github.com/itau-corp/COLOQUE_AQUI_O_REPO_2.git
+    branch: main
+    include:
+      - "**/*.md"
+      - "**/*.mdx"
+      - "**/*.txt"
+      - "**/*.yml"
+      - "**/*.yaml"
+      - "**/*.json"
+
+exclude:
+  - "**/.git/**"
+  - "**/__pycache__/**"
+  - "**/node_modules/**"
+  - "**/.venv/**"
+  - "**/venv/**"
+  - "**/*.png"
+  - "**/*.jpg"
+  - "**/*.jpeg"
+  - "**/*.gif"
+  - "**/*.pdf"
+  - "**/*.zip"
+  - "**/*.parquet"
+  - "**/*.csv"
+  - "**/*.xlsx"
+```
+
+Troque:
+
+```text
+COLOQUE_AQUI_O_REPO_1
+COLOQUE_AQUI_O_REPO_2
+```
+
+pelos links reais dos dois repositórios.
+
+Se a branch não for `main`, ajuste:
+
+```yaml
+branch: main
+```
+
+para a branch correta.
+
+---
+
+# 8. Criar o indexador
+
+Rode:
+
+```bat
+notepad agents\deploy_agent\src\deploy_agent_rag\indexer.py
+```
+
+Cole:
+
+```python
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import yaml
+from sentence_transformers import SentenceTransformer
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = PROJECT_DIR / "configs" / "rag_sources.yml"
+DEFAULT_TMP_DIR = PROJECT_DIR / ".rag_tmp" / "sources"
+
+
+def resolve_project_path(path_value: str | Path) -> Path:
+    path = Path(path_value)
+
+    if path.is_absolute():
+        return path
+
+    return PROJECT_DIR / path
+
+
+def run_command(command: list[str], cwd: Path | None = None) -> str:
+    result = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Command failed: {command}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+    return result.stdout.strip()
+
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as file:
+        return yaml.safe_load(file) or {}
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def sha1_text(payload: str) -> str:
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def clean_repo_url(repo_url: str) -> str:
+    return repo_url.removesuffix(".git")
+
+
+def matches_any(path: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def should_index_file(relative_path: str, include: list[str], exclude: list[str]) -> bool:
+    if include and not matches_any(relative_path, include):
+        return False
+
+    if exclude and matches_any(relative_path, exclude):
+        return False
+
+    return True
+
+
+def clone_repository(repo: dict[str, Any], destination: Path) -> str:
+    if destination.exists():
+        shutil.rmtree(destination)
+
+    repo_url = repo["url"]
+    branch = repo.get("branch")
+
+    command = ["git", "clone", "--depth", "1"]
+
+    if branch:
+        command.extend(["--branch", branch])
+
+    command.extend([repo_url, str(destination)])
+
+    print(f"Cloning {repo['name']}...")
+    run_command(command)
+
+    commit = run_command(["git", "rev-parse", "HEAD"], cwd=destination)
+    print(f"Cloned {repo['name']} at commit {commit}")
+
+    return commit
+
+
+def split_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    if not text:
+        return []
+
+    chunks: list[str] = []
+    start = 0
+    text_length = len(text)
+
+    while start < text_length:
+        end = min(start + chunk_size, text_length)
+
+        if end < text_length:
+            paragraph_boundary = text.rfind("\n\n", start, end)
+            line_boundary = text.rfind("\n", start, end)
+
+            if paragraph_boundary > start + int(chunk_size * 0.5):
+                end = paragraph_boundary
+            elif line_boundary > start + int(chunk_size * 0.5):
+                end = line_boundary
+
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        if end >= text_length:
+            break
+
+        start = max(0, end - chunk_overlap)
+
+    return chunks
+
+
+def read_source_files(
+    config: dict[str, Any],
+    tmp_sources_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    global_exclude = config.get("exclude", [])
+    all_documents: list[dict[str, Any]] = []
+    source_state: dict[str, Any] = {}
+
+    for repo in config["repositories"]:
+        repo_name = repo["name"]
+        repo_dir = tmp_sources_dir / repo_name
+        commit = clone_repository(repo, repo_dir)
+
+        include = repo.get("include", [])
+        repo_exclude = global_exclude + repo.get("exclude", [])
+
+        repo_state: dict[str, Any] = {
+            "url": repo["url"],
+            "branch": repo.get("branch"),
+            "commit": commit,
+            "files": {},
+        }
+
+        for file_path in repo_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            relative_path = file_path.relative_to(repo_dir).as_posix()
+
+            if not should_index_file(relative_path, include, repo_exclude):
+                continue
+
+            payload = file_path.read_bytes()
+            content_hash = sha256_bytes(payload)
+
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                text = payload.decode("utf-8", errors="ignore")
+
+            if not text.strip():
+                continue
+
+            repo_state["files"][relative_path] = content_hash
+
+            source_url = f"{clean_repo_url(repo['url'])}/blob/{commit}/{relative_path}"
+
+            all_documents.append(
+                {
+                    "repo": repo_name,
+                    "repo_url": repo["url"],
+                    "branch": repo.get("branch"),
+                    "commit": commit,
+                    "path": relative_path,
+                    "source_url": source_url,
+                    "content_hash": content_hash,
+                    "text": text,
+                }
+            )
+
+        source_state[repo_name] = repo_state
+
+    return all_documents, source_state
+
+
+def build_chunks(
+    documents: list[dict[str, Any]],
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+
+    for document in documents:
+        text_chunks = split_text(document["text"], chunk_size, chunk_overlap)
+
+        for index, chunk_text in enumerate(text_chunks):
+            chunk_id_raw = (
+                f"{document['repo']}:{document['commit']}:"
+                f"{document['path']}:{document['content_hash']}:{index}"
+            )
+            chunk_id = sha1_text(chunk_id_raw)
+
+            chunks.append(
+                {
+                    "chunk_id": chunk_id,
+                    "text": chunk_text,
+                    "metadata": {
+                        "repo": document["repo"],
+                        "branch": document["branch"],
+                        "commit": document["commit"],
+                        "path": document["path"],
+                        "source_url": document["source_url"],
+                        "content_hash": document["content_hash"],
+                        "chunk_index": index,
+                    },
+                }
+            )
+
+    return chunks
+
+
+def should_rebuild(output_dir: Path, source_state: dict[str, Any], force: bool) -> bool:
+    if force:
+        return True
+
+    manifest_path = output_dir / "manifest.json"
+    chunks_path = output_dir / "chunks.jsonl"
+    embeddings_path = output_dir / "embeddings.npy"
+
+    if not manifest_path.exists() or not chunks_path.exists() or not embeddings_path.exists():
+        return True
+
+    previous_manifest = load_json(manifest_path)
+    previous_state = previous_manifest.get("source_state", {})
+
+    return previous_state != source_state
+
+
+def build_index(config_path: Path, force: bool = False) -> None:
+    config_path = config_path.resolve()
+    config = load_yaml(config_path)
+
+    output_config = config.get("output", {})
+    output_dir = resolve_project_path(output_config.get("index_dir", "data/rag_index"))
+
+    tmp_sources_dir = DEFAULT_TMP_DIR
+
+    if tmp_sources_dir.exists():
+        shutil.rmtree(tmp_sources_dir)
+
+    tmp_sources_dir.mkdir(parents=True, exist_ok=True)
+
+    documents, source_state = read_source_files(config, tmp_sources_dir)
+
+    if not documents:
+        raise RuntimeError("No documents were found. Check repositories, branches and include patterns.")
+
+    if not should_rebuild(output_dir, source_state, force):
+        print("No source changes detected. Keeping current RAG index.")
+        return
+
+    chunking_config = config.get("chunking", {})
+    chunk_size = int(chunking_config.get("chunk_size", 1200))
+    chunk_overlap = int(chunking_config.get("chunk_overlap", 200))
+
+    chunks = build_chunks(documents, chunk_size, chunk_overlap)
+
+    if not chunks:
+        raise RuntimeError("No chunks were generated. Check document contents and chunking configuration.")
+
+    embedding_config = config.get("embedding", {})
+    model_name = embedding_config.get(
+        "model_name",
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    )
+    batch_size = int(embedding_config.get("batch_size", 32))
+
+    print(f"Loading embedding model: {model_name}")
+    model = SentenceTransformer(model_name)
+
+    texts = [chunk["text"] for chunk in chunks]
+
+    print(f"Generating embeddings for {len(texts)} chunks...")
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=True,
+        normalize_embeddings=True,
+    )
+
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    write_jsonl(output_dir / "chunks.jsonl", chunks)
+    np.save(output_dir / "embeddings.npy", embeddings)
+
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "config_path": str(config_path),
+        "embedding_model": model_name,
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap,
+        "document_count": len(documents),
+        "chunk_count": len(chunks),
+        "embedding_shape": list(embeddings.shape),
+        "source_state": source_state,
+    }
+
+    write_json(output_dir / "manifest.json", manifest)
+
+    print("RAG index generated successfully.")
+    print(f"Documents: {len(documents)}")
+    print(f"Chunks: {len(chunks)}")
+    print(f"Output directory: {output_dir}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build deploy agent RAG index.")
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="Path to RAG sources YAML config.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force rebuild even if source commits and file hashes did not change.",
+    )
+
+    args = parser.parse_args()
+    build_index(config_path=Path(args.config), force=args.force)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Salve e feche.
+
+---
+
+# 9. Criar script de atualização
+
+Rode:
+
+```bat
+notepad agents\deploy_agent\scripts\update_rag_index.py
+```
+
+Cole:
+
+```python
+from pathlib import Path
+import sys
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_DIR / "src"
+
+sys.path.insert(0, str(SRC_DIR))
+
+from deploy_agent_rag.indexer import main
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Salve e feche.
+
+---
+
+# 10. Criar busca local
+
+Rode:
+
+```bat
+notepad agents\deploy_agent\src\deploy_agent_rag\query.py
+```
+
+Cole:
+
+```python
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_INDEX_DIR = PROJECT_DIR / "data" / "rag_index"
+
+
+def load_chunks(path: Path) -> list[dict]:
+    chunks = []
+
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            chunks.append(json.loads(line))
+
+    return chunks
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Query local deploy agent RAG index.")
+    parser.add_argument("query", help="Question to search in the RAG index.")
+    parser.add_argument("--index-dir", default=str(DEFAULT_INDEX_DIR))
+    parser.add_argument("--top-k", type=int, default=5)
+
+    args = parser.parse_args()
+
+    index_dir = Path(args.index_dir)
+    manifest_path = index_dir / "manifest.json"
+    chunks_path = index_dir / "chunks.jsonl"
+    embeddings_path = index_dir / "embeddings.npy"
+
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+
+    if not chunks_path.exists():
+        raise FileNotFoundError(f"Chunks not found: {chunks_path}")
+
+    if not embeddings_path.exists():
+        raise FileNotFoundError(f"Embeddings not found: {embeddings_path}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = load_chunks(chunks_path)
+    embeddings = np.load(embeddings_path)
+
+    model = SentenceTransformer(manifest["embedding_model"])
+
+    query_embedding = model.encode(
+        [args.query],
+        normalize_embeddings=True,
+    )[0].astype(np.float32)
+
+    scores = embeddings @ query_embedding
+    top_indices = np.argsort(scores)[::-1][: args.top_k]
+
+    for rank, idx in enumerate(top_indices, start=1):
+        chunk = chunks[int(idx)]
+        metadata = chunk["metadata"]
+
+        print("=" * 100)
+        print(f"Rank: {rank}")
+        print(f"Score: {scores[int(idx)]:.4f}")
+        print(f"Repo: {metadata['repo']}")
+        print(f"Path: {metadata['path']}")
+        print(f"Commit: {metadata['commit']}")
+        print(f"Source: {metadata['source_url']}")
+        print("-" * 100)
+        print(chunk["text"][:1200])
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Salve e feche.
+
+Agora crie o wrapper:
+
+```bat
+notepad agents\deploy_agent\scripts\query_rag_index.py
+```
+
+Cole:
+
+```python
+from pathlib import Path
+import sys
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_DIR / "src"
+
+sys.path.insert(0, str(SRC_DIR))
+
+from deploy_agent_rag.query import main
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Salve e feche.
+
+---
+
+# 11. Atualizar `.gitignore`
+
+Rode:
+
+```bat
+findstr /C:"agents/deploy_agent/.rag_tmp/" .gitignore >nul 2>nul || echo agents/deploy_agent/.rag_tmp/>>.gitignore
+findstr /C:"agents/deploy_agent/.venv/" .gitignore >nul 2>nul || echo agents/deploy_agent/.venv/>>.gitignore
+findstr /C:"agents/deploy_agent/**/__pycache__/" .gitignore >nul 2>nul || echo agents/deploy_agent/**/__pycache__/>>.gitignore
+```
+
+Mesmo usando Poetry, ele pode criar ambiente virtual fora ou dentro do projeto dependendo da configuração. A entrada `.venv/` fica como proteção.
+
+---
+
+# 12. Instalar dependências com Poetry
+
+Primeiro veja se o Poetry está instalado:
+
+```bat
+poetry --version
+```
+
+Se funcionar, entre no diretório do agente:
+
+```bat
+cd agents\deploy_agent
+poetry install
+cd ..\..
+```
+
+Se `poetry` não existir, instale:
+
+```bat
+py -m pip install --user poetry
+```
+
+Depois feche e abra o `cmd` de novo. Volte para o repositório e teste:
+
+```bat
+poetry --version
+```
+
+Então rode:
+
+```bat
+cd agents\deploy_agent
+poetry install
+cd ..\..
+```
+
+Isso deve criar o `poetry.lock` dentro de:
+
+```text
+agents/deploy_agent/poetry.lock
+```
+
+Esse arquivo deve ser commitado.
+
+---
+
+# 13. Gerar o índice RAG pela primeira vez
+
+Depois de preencher os dois links reais no YAML:
+
+```bat
+cd agents\deploy_agent
+poetry run python scripts\update_rag_index.py --force
+cd ..\..
+```
+
+Confira se os arquivos foram criados:
+
+```bat
+dir agents\deploy_agent\data\rag_index
+```
+
+Esperado:
+
+```text
+chunks.jsonl
+embeddings.npy
+manifest.json
+```
+
+## Significado dos arquivos
+
+| Arquivo          | Função                                                             |
+| ---------------- | ------------------------------------------------------------------ |
+| `chunks.jsonl`   | Chunks textuais com metadados                                      |
+| `embeddings.npy` | Vetores normalizados para busca semântica                          |
+| `manifest.json`  | Auditoria com data, modelo, commits, hashes e quantidade de chunks |
+
+---
+
+# 14. Testar a busca local
+
+Rode:
+
+```bat
+cd agents\deploy_agent
+poetry run python scripts\query_rag_index.py "Como funciona o deploy de modelos na IU Lotus?"
+cd ..\..
+```
+
+Outros testes úteis:
+
+```bat
+cd agents\deploy_agent
+poetry run python scripts\query_rag_index.py "Quais são os pré-requisitos para deploy?"
+cd ..\..
+```
+
+```bat
+cd agents\deploy_agent
+poetry run python scripts\query_rag_index.py "Como funciona monitoramento na IU Lotus?"
+cd ..\..
+```
+
+O retorno deve mostrar:
+
+```text
+Rank
+Score
+Repo
+Path
+Commit
+Source
+Trecho recuperado
+```
+
+Isso é importante para rastreabilidade. O agente de deploy não deve responder só com texto solto. Ele precisa saber de qual repositório, arquivo e commit veio cada trecho.
+
+---
+
+# 15. Criar GitHub Action semanal e manual
+
+Rode:
+
+```bat
+mkdir .github\workflows 2>nul
+notepad .github\workflows\update-deploy-agent-rag-index.yml
+```
+
+Cole:
+
+```yaml
+name: Update Deploy Agent RAG Index
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force rebuild even if no source changes are detected"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+jobs:
+  update-rag-index:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: agents/deploy_agent
+
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git access for private documentation repositories
+        env:
+          RAG_REPOS_TOKEN: ${{ secrets.RAG_REPOS_TOKEN }}
+        run: |
+          if [ -n "$RAG_REPOS_TOKEN" ]; then
+            git config --global url."https://x-access-token:${RAG_REPOS_TOKEN}@github.com/".insteadOf "https://github.com/"
+          else
+            echo "RAG_REPOS_TOKEN is empty. Private repositories may fail to clone."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry==2.1.1
+
+      - name: Install Deploy Agent dependencies
+        run: |
+          poetry install --no-interaction
+
+      - name: Build RAG index
+        run: |
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+
+          if [ "$FORCE" = "true" ]; then
+            poetry run python scripts/update_rag_index.py --force
+          else
+            poetry run python scripts/update_rag_index.py
+          fi
+
+      - name: Commit updated RAG index
+        run: |
+          cd ../..
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add agents/deploy_agent/data/rag_index
+
+          if git diff --cached --quiet; then
+            echo "No RAG index changes to commit."
+          else
+            git commit -m "chore: update deploy agent rag index"
+            git push
+          fi
+```
+
+Salve e feche.
+
+## O que esse workflow faz
+
+| Gatilho               | Efeito                                  |
+| --------------------- | --------------------------------------- |
+| `schedule`            | Roda toda segunda-feira às 08:00 UTC    |
+| `workflow_dispatch`   | Permite rodar manualmente pelo GitHub   |
+| `force_rebuild=false` | Só recria se detectar mudança nos repos |
+| `force_rebuild=true`  | Recria tudo mesmo sem mudança detectada |
+| `RAG_REPOS_TOKEN`     | Permite clonar documentação privada     |
+
+---
+
+# 16. Configurar secret no GitHub
+
+Se os dois repositórios de documentação forem privados, configure um secret chamado:
+
+```text
+RAG_REPOS_TOKEN
+```
+
+Caminho:
+
+```text
+GitHub
+Settings
+Secrets and variables
+Actions
+New repository secret
+```
+
+Permissões recomendadas do token:
+
+```text
+Contents: Read
+Metadata: Read
+```
+
+Ele precisa conseguir clonar os dois repositórios de documentação.
+
+---
+
+# 17. Rodar manualmente a atualização no GitHub
+
+Depois que o PR estiver no GitHub ou a branch estiver publicada:
+
+```text
+Actions
+Update Deploy Agent RAG Index
+Run workflow
+Branch: feature/deploy-agent-foundation
+force_rebuild: false ou true
+Run workflow
+```
+
+Use:
+
+| Situação                       | Valor   |
+| ------------------------------ | ------- |
+| Atualização normal             | `false` |
+| Mudou chunking                 | `true`  |
+| Mudou modelo de embedding      | `true`  |
+| Índice parece corrompido       | `true`  |
+| Quer garantir rebuild completo | `true`  |
+
+---
+
+# 18. Commitar tudo
+
+Depois que a geração local e a busca local funcionarem:
+
+```bat
+git status
+git add agents\deploy_agent .github\workflows\update-deploy-agent-rag-index.yml .gitignore
+git commit -m "feat: add deploy agent rag foundation"
+git push -u origin feature/deploy-agent-foundation
+```
+
+---
+
+# 19. Observação importante sobre versionar os vetores
+
+Como você pediu para deixar **base de conhecimento, RAG e vetores prontos**, esta solução versiona:
+
+```text
+agents/deploy_agent/data/rag_index/chunks.jsonl
+agents/deploy_agent/data/rag_index/embeddings.npy
+agents/deploy_agent/data/rag_index/manifest.json
+```
+
+Isso é bom para uma PoC porque simplifica muito.
+
+Mas existe um limite: se `embeddings.npy` ficar muito grande, talvez a squad prefira mover os vetores para outro lugar, como artifact de pipeline, bucket, vector database ou storage interno. Para agora, eu manteria no repositório até validar o tamanho e a frequência de atualização.
+
+---
+
+# 20. Resultado final esperado
+
+Ao final, você terá:
+
+```text
+Branch:
+feature/deploy-agent-foundation
+
+Diretório do agente:
+agents/deploy_agent/
+
+Código do RAG:
+agents/deploy_agent/src/deploy_agent_rag/
+
+Scripts:
+agents/deploy_agent/scripts/update_rag_index.py
+agents/deploy_agent/scripts/query_rag_index.py
+
+Config dos repositórios:
+agents/deploy_agent/configs/rag_sources.yml
+
+Índice gerado:
+agents/deploy_agent/data/rag_index/chunks.jsonl
+agents/deploy_agent/data/rag_index/embeddings.npy
+agents/deploy_agent/data/rag_index/manifest.json
+
+Automação:
+.github/workflows/update-deploy-agent-rag-index.yml
+```
+
+Essa é a versão mais consistente com as imagens: **isolada em `agents/deploy_agent/`, usando Poetry, sem mexer no SDK principal, com atualização semanal e manual via GitHub Actions**.
