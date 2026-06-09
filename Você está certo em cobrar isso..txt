@@ -1,0 +1,945 @@
+Você está certo em cobrar isso.
+
+Eu **considerei parcialmente** as imagens, mas minha resposta anterior ficou genérica demais. Ela não explorou o suficiente o fato de que você está **dentro do repositório atual do IU Lotus SDK**, e não começando em um repositório vazio.
+
+Pelas imagens, o repositório atual é algo como:
+
+```text
+itau-rs7-dep-iu-lotus-sdk
+```
+
+E ele já tem:
+
+```text
+.github/
+scripts/
+src/
+pyproject.toml
+poetry.lock
+requirements.txt
+README.md
+README_EN.md
+.iupipes.yml
+```
+
+Além disso, o README mostra que o SDK:
+
+```text
+suporta apenas Unix/Linux
+foi testado em Python 3.9, 3.10 e 3.11
+usa poetry para testes
+tem instalação via Artifactory
+```
+
+Então a resposta correta precisa ser ajustada assim:
+
+1. **Não criar um repositório dentro do repositório.**
+2. **Não mexer no `requirements.txt`, `pyproject.toml` ou `poetry.lock` agora**, para não quebrar o SDK.
+3. Criar uma estrutura isolada para o agente/RAG dentro do repo atual.
+4. Usar uma dependência separada, tipo `requirements-rag.txt`.
+5. Fazer a GitHub Action rodar em Linux, que combina com o suporte oficial do SDK.
+6. Trabalhar em uma branch genérica ligada ao agente de deploy.
+
+Abaixo está a versão refeita.
+
+---
+
+# Plano correto para o seu caso
+
+## 1. Nome da branch
+
+Use:
+
+```text
+feature/deploy-agent-foundation
+```
+
+Motivo: é genérico o suficiente para você trabalhar em RAG, base de conhecimento, ferramentas, agente, avaliação e integração de deploy sem ficar preso só ao índice vetorial.
+
+---
+
+## 2. Criar a branch
+
+No `cmd`, dentro do repositório atual, rode:
+
+```bat
+git status
+git fetch origin
+git switch develop
+git pull origin develop
+git switch -c feature/deploy-agent-foundation
+```
+
+Se der erro porque `develop` não existe localmente, rode:
+
+```bat
+git switch main
+git pull origin main
+git switch -c feature/deploy-agent-foundation
+```
+
+Pela imagem, você está vendo `tree/main`, mas também aparece merge vindo de `develop`, então eu tentaria `develop` primeiro.
+
+---
+
+## 3. Criar estrutura isolada para o RAG
+
+Como o repo já tem `src` e `scripts`, vamos usar essas pastas sem bagunçar o SDK.
+
+Rode:
+
+```bat
+mkdir configs\deploy_agent 2>nul
+mkdir scripts\rag 2>nul
+mkdir src\deploy_agent_rag 2>nul
+mkdir data\deploy_agent_rag_index 2>nul
+type nul > src\deploy_agent_rag\__init__.py
+```
+
+Agora adicione pastas temporárias ao `.gitignore`:
+
+```bat
+findstr /C:".rag_tmp/" .gitignore >nul 2>nul || echo .rag_tmp/>>.gitignore
+findstr /C:".venv-rag/" .gitignore >nul 2>nul || echo .venv-rag/>>.gitignore
+```
+
+A estrutura ficará assim:
+
+```text
+configs/
+  deploy_agent/
+    rag_sources.yml
+
+scripts/
+  rag/
+    update_rag_index.py
+    query_rag_index.py
+
+src/
+  deploy_agent_rag/
+    __init__.py
+    indexer.py
+    query.py
+
+data/
+  deploy_agent_rag_index/
+    chunks.jsonl
+    embeddings.npy
+    manifest.json
+```
+
+Essa estrutura evita conflito com o SDK já existente.
+
+---
+
+## 4. Criar dependências separadas do RAG
+
+Rode:
+
+```bat
+powershell -NoProfile -Command "@'
+PyYAML>=6.0.1,<7
+numpy>=1.26,<3
+sentence-transformers>=3.0.1,<4
+tqdm>=4.66,<5
+'@ | Set-Content -Path requirements-rag.txt -Encoding UTF8"
+```
+
+Por que separar?
+
+Porque o repo já tem `requirements.txt`, `pyproject.toml` e `poetry.lock`. Alterar isso agora pode afetar o SDK inteiro. Para a PoC do agente, é mais seguro manter as dependências do RAG separadas.
+
+---
+
+## 5. Criar configuração dos dois repositórios de documentação
+
+Rode:
+
+```bat
+powershell -NoProfile -Command "@'
+embedding:
+  model_name: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  batch_size: 32
+
+chunking:
+  chunk_size: 1200
+  chunk_overlap: 200
+
+output:
+  index_dir: data/deploy_agent_rag_index
+
+repositories:
+  - name: public_docs
+    url: https://github.com/itau-corp/COLOQUE_AQUI_O_REPO_1.git
+    branch: main
+    include:
+      - '**/*.md'
+      - '**/*.mdx'
+      - '**/*.txt'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.json'
+
+  - name: internal_docs
+    url: https://github.com/itau-corp/COLOQUE_AQUI_O_REPO_2.git
+    branch: main
+    include:
+      - '**/*.md'
+      - '**/*.mdx'
+      - '**/*.txt'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '**/*.json'
+
+exclude:
+  - '**/.git/**'
+  - '**/__pycache__/**'
+  - '**/node_modules/**'
+  - '**/.venv/**'
+  - '**/venv/**'
+  - '**/*.png'
+  - '**/*.jpg'
+  - '**/*.jpeg'
+  - '**/*.gif'
+  - '**/*.pdf'
+  - '**/*.zip'
+  - '**/*.parquet'
+  - '**/*.csv'
+  - '**/*.xlsx'
+'@ | Set-Content -Path configs\deploy_agent\rag_sources.yml -Encoding UTF8"
+```
+
+Depois abra para editar:
+
+```bat
+notepad configs\deploy_agent\rag_sources.yml
+```
+
+Troque:
+
+```text
+COLOQUE_AQUI_O_REPO_1
+COLOQUE_AQUI_O_REPO_2
+```
+
+pelos links reais dos dois repositórios.
+
+---
+
+## 6. Criar ambiente local só para RAG
+
+Como o README mostra suporte a Python 3.9, 3.10 e 3.11, use Python 3.11 se tiver.
+
+```bat
+py -3.11 -m venv .venv-rag
+.venv-rag\Scripts\activate.bat
+python -m pip install --upgrade pip
+pip install -r requirements-rag.txt
+```
+
+Se `py -3.11` falhar:
+
+```bat
+python -m venv .venv-rag
+.venv-rag\Scripts\activate.bat
+python -m pip install --upgrade pip
+pip install -r requirements-rag.txt
+```
+
+Observação importante: o SDK em si diz suportar Unix/Linux. Mas aqui você está só criando e testando o **indexador RAG**, não rodando a jornada oficial do SDK. A automação oficial vai rodar no GitHub Actions em Linux.
+
+---
+
+## 7. Criar o indexador
+
+Crie o arquivo:
+
+```bat
+notepad src\deploy_agent_rag\indexer.py
+```
+
+Cole este conteúdo:
+
+```python
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import yaml
+from sentence_transformers import SentenceTransformer
+
+
+def run_command(command: list[str], cwd: Path | None = None) -> str:
+    result = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Command failed: {command}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+
+    return result.stdout.strip()
+
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as file:
+        return yaml.safe_load(file) or {}
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def sha1_text(payload: str) -> str:
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def clean_repo_url(repo_url: str) -> str:
+    return repo_url.removesuffix(".git")
+
+
+def matches_any(path: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def should_index_file(relative_path: str, include: list[str], exclude: list[str]) -> bool:
+    if include and not matches_any(relative_path, include):
+        return False
+
+    if exclude and matches_any(relative_path, exclude):
+        return False
+
+    return True
+
+
+def clone_repository(repo: dict[str, Any], destination: Path) -> str:
+    if destination.exists():
+        shutil.rmtree(destination)
+
+    repo_url = repo["url"]
+    branch = repo.get("branch")
+
+    command = ["git", "clone", "--depth", "1"]
+
+    if branch:
+        command.extend(["--branch", branch])
+
+    command.extend([repo_url, str(destination)])
+
+    print(f"Cloning {repo['name']}...")
+    run_command(command)
+
+    commit = run_command(["git", "rev-parse", "HEAD"], cwd=destination)
+    print(f"Cloned {repo['name']} at commit {commit}")
+
+    return commit
+
+
+def split_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    if not text:
+        return []
+
+    chunks = []
+    start = 0
+    text_length = len(text)
+
+    while start < text_length:
+        end = min(start + chunk_size, text_length)
+
+        if end < text_length:
+            paragraph_boundary = text.rfind("\n\n", start, end)
+            line_boundary = text.rfind("\n", start, end)
+
+            if paragraph_boundary > start + int(chunk_size * 0.5):
+                end = paragraph_boundary
+            elif line_boundary > start + int(chunk_size * 0.5):
+                end = line_boundary
+
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        if end >= text_length:
+            break
+
+        start = max(0, end - chunk_overlap)
+
+    return chunks
+
+
+def read_source_files(
+    config: dict[str, Any],
+    tmp_sources_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    global_exclude = config.get("exclude", [])
+    all_documents = []
+    source_state = {}
+
+    for repo in config["repositories"]:
+        repo_name = repo["name"]
+        repo_dir = tmp_sources_dir / repo_name
+        commit = clone_repository(repo, repo_dir)
+
+        include = repo.get("include", [])
+        repo_exclude = global_exclude + repo.get("exclude", [])
+
+        repo_state = {
+            "url": repo["url"],
+            "branch": repo.get("branch"),
+            "commit": commit,
+            "files": {},
+        }
+
+        for file_path in repo_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            relative_path = file_path.relative_to(repo_dir).as_posix()
+
+            if not should_index_file(relative_path, include, repo_exclude):
+                continue
+
+            payload = file_path.read_bytes()
+            content_hash = sha256_bytes(payload)
+
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                text = payload.decode("utf-8", errors="ignore")
+
+            if not text.strip():
+                continue
+
+            repo_state["files"][relative_path] = content_hash
+
+            source_url = f"{clean_repo_url(repo['url'])}/blob/{commit}/{relative_path}"
+
+            all_documents.append(
+                {
+                    "repo": repo_name,
+                    "repo_url": repo["url"],
+                    "branch": repo.get("branch"),
+                    "commit": commit,
+                    "path": relative_path,
+                    "source_url": source_url,
+                    "content_hash": content_hash,
+                    "text": text,
+                }
+            )
+
+        source_state[repo_name] = repo_state
+
+    return all_documents, source_state
+
+
+def build_chunks(
+    documents: list[dict[str, Any]],
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict[str, Any]]:
+    chunks = []
+
+    for document in documents:
+        text_chunks = split_text(document["text"], chunk_size, chunk_overlap)
+
+        for index, chunk_text in enumerate(text_chunks):
+            chunk_id_raw = (
+                f"{document['repo']}:{document['commit']}:"
+                f"{document['path']}:{document['content_hash']}:{index}"
+            )
+            chunk_id = sha1_text(chunk_id_raw)
+
+            chunks.append(
+                {
+                    "chunk_id": chunk_id,
+                    "text": chunk_text,
+                    "metadata": {
+                        "repo": document["repo"],
+                        "branch": document["branch"],
+                        "commit": document["commit"],
+                        "path": document["path"],
+                        "source_url": document["source_url"],
+                        "content_hash": document["content_hash"],
+                        "chunk_index": index,
+                    },
+                }
+            )
+
+    return chunks
+
+
+def should_rebuild(output_dir: Path, source_state: dict[str, Any], force: bool) -> bool:
+    if force:
+        return True
+
+    manifest_path = output_dir / "manifest.json"
+    chunks_path = output_dir / "chunks.jsonl"
+    embeddings_path = output_dir / "embeddings.npy"
+
+    if not manifest_path.exists() or not chunks_path.exists() or not embeddings_path.exists():
+        return True
+
+    previous_manifest = load_json(manifest_path)
+    previous_state = previous_manifest.get("source_state", {})
+
+    return previous_state != source_state
+
+
+def build_index(config_path: Path, force: bool = False) -> None:
+    config = load_yaml(config_path)
+
+    output_dir = Path(config.get("output", {}).get("index_dir", "data/deploy_agent_rag_index"))
+    tmp_sources_dir = Path(".rag_tmp") / "sources"
+
+    if tmp_sources_dir.exists():
+        shutil.rmtree(tmp_sources_dir)
+
+    tmp_sources_dir.mkdir(parents=True, exist_ok=True)
+
+    documents, source_state = read_source_files(config, tmp_sources_dir)
+
+    if not documents:
+        raise RuntimeError("No documents were found. Check repositories, branches and include patterns.")
+
+    if not should_rebuild(output_dir, source_state, force):
+        print("No source changes detected. Keeping current RAG index.")
+        return
+
+    chunking_config = config.get("chunking", {})
+    chunk_size = int(chunking_config.get("chunk_size", 1200))
+    chunk_overlap = int(chunking_config.get("chunk_overlap", 200))
+
+    chunks = build_chunks(documents, chunk_size, chunk_overlap)
+
+    if not chunks:
+        raise RuntimeError("No chunks were generated. Check document contents and chunking configuration.")
+
+    embedding_config = config.get("embedding", {})
+    model_name = embedding_config.get(
+        "model_name",
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    )
+    batch_size = int(embedding_config.get("batch_size", 32))
+
+    print(f"Loading embedding model: {model_name}")
+    model = SentenceTransformer(model_name)
+
+    texts = [chunk["text"] for chunk in chunks]
+
+    print(f"Generating embeddings for {len(texts)} chunks...")
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=True,
+        normalize_embeddings=True,
+    )
+
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    write_jsonl(output_dir / "chunks.jsonl", chunks)
+    np.save(output_dir / "embeddings.npy", embeddings)
+
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "config_path": config_path.as_posix(),
+        "embedding_model": model_name,
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap,
+        "document_count": len(documents),
+        "chunk_count": len(chunks),
+        "embedding_shape": list(embeddings.shape),
+        "source_state": source_state,
+    }
+
+    write_json(output_dir / "manifest.json", manifest)
+
+    print("RAG index generated successfully.")
+    print(f"Documents: {len(documents)}")
+    print(f"Chunks: {len(chunks)}")
+    print(f"Output directory: {output_dir}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build deploy agent RAG index.")
+    parser.add_argument(
+        "--config",
+        default="configs/deploy_agent/rag_sources.yml",
+        help="Path to RAG sources YAML config.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force rebuild even if source commits and file hashes did not change.",
+    )
+
+    args = parser.parse_args()
+    build_index(config_path=Path(args.config), force=args.force)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## 8. Criar script executável
+
+Crie:
+
+```bat
+notepad scripts\rag\update_rag_index.py
+```
+
+Cole:
+
+```python
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = PROJECT_ROOT / "src"
+
+sys.path.insert(0, str(SRC_DIR))
+
+from deploy_agent_rag.indexer import main
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## 9. Gerar o índice local
+
+Depois de preencher os dois links reais no YAML, rode:
+
+```bat
+python scripts\rag\update_rag_index.py --force
+```
+
+Ao terminar, confira:
+
+```bat
+dir data\deploy_agent_rag_index
+```
+
+Você deve ver:
+
+```text
+chunks.jsonl
+embeddings.npy
+manifest.json
+```
+
+Esses são os três artefatos principais da base RAG.
+
+---
+
+## 10. Criar busca local para testar
+
+Crie:
+
+```bat
+notepad src\deploy_agent_rag\query.py
+```
+
+Cole:
+
+```python
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+
+def load_chunks(path: Path) -> list[dict]:
+    chunks = []
+
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            chunks.append(json.loads(line))
+
+    return chunks
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Query local deploy agent RAG index.")
+    parser.add_argument("query", help="Question to search in the RAG index.")
+    parser.add_argument("--index-dir", default="data/deploy_agent_rag_index")
+    parser.add_argument("--top-k", type=int, default=5)
+
+    args = parser.parse_args()
+
+    index_dir = Path(args.index_dir)
+    manifest_path = index_dir / "manifest.json"
+    chunks_path = index_dir / "chunks.jsonl"
+    embeddings_path = index_dir / "embeddings.npy"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = load_chunks(chunks_path)
+    embeddings = np.load(embeddings_path)
+
+    model = SentenceTransformer(manifest["embedding_model"])
+
+    query_embedding = model.encode(
+        [args.query],
+        normalize_embeddings=True,
+    )[0].astype(np.float32)
+
+    scores = embeddings @ query_embedding
+    top_indices = np.argsort(scores)[::-1][: args.top_k]
+
+    for rank, idx in enumerate(top_indices, start=1):
+        chunk = chunks[int(idx)]
+        metadata = chunk["metadata"]
+
+        print("=" * 100)
+        print(f"Rank: {rank}")
+        print(f"Score: {scores[int(idx)]:.4f}")
+        print(f"Repo: {metadata['repo']}")
+        print(f"Path: {metadata['path']}")
+        print(f"Commit: {metadata['commit']}")
+        print(f"Source: {metadata['source_url']}")
+        print("-" * 100)
+        print(chunk["text"][:1200])
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Agora crie o wrapper:
+
+```bat
+notepad scripts\rag\query_rag_index.py
+```
+
+Cole:
+
+```python
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = PROJECT_ROOT / "src"
+
+sys.path.insert(0, str(SRC_DIR))
+
+from deploy_agent_rag.query import main
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Teste:
+
+```bat
+python scripts\rag\query_rag_index.py "Como funciona o deploy de modelos na IU Lotus?"
+```
+
+---
+
+## 11. Criar GitHub Action semanal e manual
+
+Como o repo já tem `.github`, vamos só criar um workflow novo.
+
+Crie:
+
+```bat
+notepad .github\workflows\update-deploy-agent-rag-index.yml
+```
+
+Cole:
+
+```yaml
+name: Update Deploy Agent RAG Index
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force rebuild even if no source changes are detected"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+jobs:
+  update-rag-index:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git access for private documentation repositories
+        env:
+          RAG_REPOS_TOKEN: ${{ secrets.RAG_REPOS_TOKEN }}
+        run: |
+          if [ -n "$RAG_REPOS_TOKEN" ]; then
+            git config --global url."https://x-access-token:${RAG_REPOS_TOKEN}@github.com/".insteadOf "https://github.com/"
+          else
+            echo "RAG_REPOS_TOKEN is empty. Private repositories may fail to clone."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install RAG dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-rag.txt
+
+      - name: Build RAG index
+        run: |
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+
+          if [ "$FORCE" = "true" ]; then
+            python scripts/rag/update_rag_index.py --force
+          else
+            python scripts/rag/update_rag_index.py
+          fi
+
+      - name: Commit updated RAG index
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/deploy_agent_rag_index
+
+          if git diff --cached --quiet; then
+            echo "No RAG index changes to commit."
+          else
+            git commit -m "chore: update deploy agent rag index"
+            git push
+          fi
+```
+
+Esse workflow faz duas coisas:
+
+| Caso                | Como roda                              |
+| ------------------- | -------------------------------------- |
+| Atualização semanal | Toda segunda às 08:00 UTC              |
+| Atualização manual  | Botão `Run workflow` no GitHub Actions |
+
+---
+
+## 12. Configurar secret no GitHub
+
+Se os dois repositórios de documentação forem privados, configure:
+
+```text
+RAG_REPOS_TOKEN
+```
+
+No GitHub:
+
+```text
+Settings
+Secrets and variables
+Actions
+New repository secret
+```
+
+Esse token precisa ter leitura nos dois repositórios de documentação.
+
+Permissões ideais:
+
+```text
+Contents: Read
+Metadata: Read
+```
+
+---
+
+## 13. Commitar
+
+Depois de testar localmente:
+
+```bat
+git status
+git add configs\deploy_agent scripts\rag src\deploy_agent_rag requirements-rag.txt .github\workflows\update-deploy-agent-rag-index.yml .gitignore data\deploy_agent_rag_index
+git commit -m "feat: add deploy agent rag foundation"
+git push -u origin feature/deploy-agent-foundation
+```
+
+---
+
+# Resumo da correção
+
+Minha resposta anterior estava **conceitualmente certa**, mas precisava ser ajustada ao repositório real das imagens.
+
+A versão correta é:
+
+```text
+Não criar repo dentro do repo.
+Não mexer no SDK principal agora.
+Não alterar pyproject/poetry/requirements do SDK.
+Criar módulo isolado: src/deploy_agent_rag.
+Criar scripts isolados: scripts/rag.
+Criar configs isoladas: configs/deploy_agent.
+Criar índice local versionável: data/deploy_agent_rag_index.
+Criar GitHub Action semanal + manual.
+Rodar a automação oficial em Linux.
+```
+
+Essa é a forma mais segura para começar dentro do repositório atual do IU Lotus SDK.
