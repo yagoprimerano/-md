@@ -1,0 +1,462 @@
+Você é o Claude Code atuando em um repositório existente do SDK IU Lotus.
+
+Contexto do projeto:
+Estou desenvolvendo a fundação de RAG/base de conhecimento para um futuro agente de deploy de modelos da IU Lotus. O agente precisa consultar documentação relacionada a deploy, inferência, operação, troubleshooting, monitoramento, governança e sustentação.
+
+Existem dois repositórios GitHub distintos de documentação. Cada um contém uma parte da documentação que deve alimentar o RAG. Ou seja, o repositório GitHub de documentação interna contém a documentação interna, o repositório GitHub de documentação pública contém a documentação pública, e a base de conhecimento final deve considerar o conteúdo combinado dos dois.
+
+Repositórios de documentação que devem ser usados como fonte:
+
+Documentação interna:
+https://github.com/itau-corp-commons/itau-mr7-doc-documentacao-interna.git
+
+Documentação pública:
+https://github.com/itau-corp-commons/itau-rs7-doc-iulotus.git
+
+A documentação da IU Lotus é atualizada constantemente nesses dois repositórios. Por isso, a base de conhecimento não deve ser tratada como estática. A solução precisa prever atualização recorrente da documentação no S3 e posterior ingestão/sync da Bedrock Knowledge Base.
+
+Requisito de atualização:
+
+* deve existir um caminho para atualização semanal da documentação, pois os repositórios podem mudar ao longo do tempo;
+* também deve existir um caminho para atualização manual sob demanda, acionado pelo usuário quando houver correção importante, mudança crítica ou atualização urgente na documentação;
+* a atualização manual deve permitir reenviar a documentação ao S3 e iniciar nova ingestão da Knowledge Base sem depender do ciclo semanal;
+* não implemente GitHub Actions, pois não podemos alterar .github/workflows;
+* a implementação deve deixar claro quais comandos/scripts permitem a atualização manual agora e quais partes poderiam depois ser executadas por um scheduler aprovado, como SageMaker, CodeBuild, EventBridge, pipeline interno, Jenkins, Airflow ou outro mecanismo validado pela squad.
+
+Importante:
+Você, Claude Code, é o especialista responsável por analisar o repositório, entender a estrutura existente e propor a melhor implementação. As estruturas, nomes de arquivos, scripts e lógica descritos abaixo são apenas rascunhos e ideias iniciais para orientar o objetivo. Não trate como especificação rígida. Se encontrar uma solução melhor, mais simples, mais idiomática ou mais aderente ao padrão do repositório, proponha e implemente essa solução, explicando as decisões.
+
+Contexto da abordagem antiga:
+Foi iniciada uma abordagem local dentro de:
+
+agents/deploy_agent/
+
+A abordagem antiga fazia:
+
+* clone dos dois repositórios GitHub de documentação;
+* leitura de arquivos .md, .mdx, .txt, .yaml, .yml e .json;
+* chunking local;
+* vetorização local com TF-IDF;
+* persistência de índice local em data/rag_index;
+* consulta local com scikit-learn/joblib;
+* tentativa futura de automação por GitHub Actions.
+
+Essa abordagem deve ser abandonada como caminho principal pelos seguintes motivos:
+
+1. A automação por GitHub Actions dependeria de criar ou alterar .github/workflows na raiz do repo, e isso não é permitido ou ainda não foi aprovado.
+2. TF-IDF é apenas lexical e teve qualidade limitada para o caso de uso.
+3. Houve bloqueio de rede/proxy ao tentar usar embeddings do Hugging Face.
+4. Não queremos manter índice vetorial local, vectors.joblib, vectorizer.joblib, chunks.jsonl e lógica própria de busca no repositório.
+5. A squad aprovou migrar para uma abordagem AWS gerenciada com S3 + Amazon Bedrock Knowledge Base.
+
+Objetivo novo:
+Refatorar o código do agente para abandonar o RAG local com TF-IDF e preparar uma abordagem AWS.
+
+A arquitetura alvo, em termos conceituais, é:
+
+Repositório GitHub de documentação interna + Repositório GitHub de documentação pública
+-> sincronização dos documentos
+-> normalização dos arquivos relevantes
+-> envio para S3
+-> Amazon Bedrock Knowledge Base usando esse S3 como fonte de dados
+-> ingestão/sync da Knowledge Base
+-> agente consulta a Knowledge Base via boto3
+-> Bedrock gera respostas com base nas fontes recuperadas
+
+Mas a forma exata de implementar isso no repositório deve ser definida por você após análise do código existente. Use o padrão do projeto quando ele existir.
+
+Contexto operacional:
+
+* O código fica no GitHub.
+* O SDK/agente será usado pelo SageMaker Studio.
+* A autenticação AWS deve depender da role do ambiente, não de credenciais hardcoded.
+* A autenticação GitHub para clonar os dois repositórios de documentação deve usar o mecanismo já disponível no ambiente ou um mecanismo aprovado, nunca token hardcoded.
+* Não altere .github/workflows.
+* Não crie GitHub Actions.
+* Não commite tokens, ARNs reais ou IDs reais.
+* Não commite credenciais.
+* Os links dos repositórios acima são as fontes de documentação que precisam ser clonadas/lidas. Caso a política do repositório não permita versionar URLs internas reais, use placeholders nos arquivos .example e deixe claro no README onde o usuário deve preencher essas URLs localmente.
+* Use placeholders, arquivos .example e variáveis de ambiente/configuração para valores sensíveis ou específicos de ambiente.
+* Deploy, produção, GMUD, rollback, rerun, MRM, TAAC, permissões e alterações de infraestrutura são sensíveis. O agente deve ser copiloto, não executor autônomo irrestrito.
+
+Tarefa 1: Inspecionar estado atual
+Antes de modificar, inspecione a estrutura atual do repositório e identifique se existem arquivos antigos da PoC local, especialmente:
+
+* agents/deploy_agent/src/deploy_agent_rag/
+* agents/deploy_agent/scripts/update_rag_index.py
+* agents/deploy_agent/scripts/query_rag_index.py
+* agents/deploy_agent/data/rag_index/
+* chunks.jsonl
+* manifest.json local do índice TF-IDF
+* vectors.joblib
+* vectorizer.joblib
+* dependências relacionadas a scikit-learn, numpy, joblib e tqdm, apenas se usadas somente pelo RAG antigo
+* qualquer referência a provider: tfidf
+* qualquer referência a sentence-transformers/Hugging Face como caminho principal
+
+Antes de apagar arquivos, liste quais arquivos pretende remover e por quê.
+
+Tarefa 2: Remover ou substituir a abordagem antiga
+Remova ou substitua o que for específico do RAG local com TF-IDF:
+
+* código de indexação local;
+* código de query local por TF-IDF;
+* artefatos versionados do índice local;
+* dependências que só existiam por causa do TF-IDF local;
+* documentação que descreve o RAG local como abordagem principal.
+
+Mantenha agents/deploy_agent/ como diretório isolado do agente, se isso fizer sentido após inspecionar o repositório.
+
+Tarefa 3: Propor a nova implementação
+Proponha uma implementação para a abordagem AWS.
+
+A sugestão inicial de responsabilidades é:
+
+* sincronizar documentos dos dois repositórios GitHub de documentação;
+* normalizar documentos para markdown/texto;
+* publicar documentos normalizados no S3;
+* gerar manifest de auditoria;
+* iniciar ingestão da Bedrock Knowledge Base;
+* consultar a Bedrock Knowledge Base;
+* expor uma classe reutilizável para o agente consultar o RAG.
+
+Mas você deve decidir a estrutura final, nomes de módulos, scripts e classes conforme o padrão do repositório.
+
+Uma estrutura inicial possível, apenas como rascunho, seria algo próximo de:
+
+agents/deploy_agent/
+README.md
+pyproject.toml
+configs/
+rag_sources.yml.example
+aws_kb.yml.example
+scripts/
+sync_docs_to_s3.py
+start_kb_ingestion.py
+query_kb.py
+src/
+deploy_agent/
+**init**.py
+config.py
+docs_sync/
+**init**.py
+github_sources.py
+normalizer.py
+s3_publisher.py
+manifest.py
+rag/
+**init**.py
+bedrock_kb_client.py
+tests/
+test_normalizer.py
+test_manifest.py
+
+Essa estrutura não é obrigatória. Use-a apenas como referência. Se houver uma estrutura melhor, implemente a melhor.
+
+Tarefa 4: Configuração
+Crie configurações sem segredos reais.
+
+O repositório deve ter exemplos de configuração, não arquivos com valores reais de ambiente.
+
+A configuração de fontes de documentação deve permitir:
+
+* dois repositórios GitHub de documentação;
+* documentação interna;
+* documentação pública;
+* name;
+* url;
+* branch;
+* extensões permitidas: .md, .mdx, .txt, .yaml, .yml, .json;
+* diretórios ignorados: .git, **pycache**, node_modules, .venv, venv;
+* observação de que tokens nunca devem ser colocados no arquivo.
+
+Use estes repositórios como fonte:
+
+* name: internal_docs
+  url: https://github.com/itau-corp-commons/itau-mr7-doc-documentacao-interna.git
+  branch: main
+
+* name: public_docs
+  url: https://github.com/itau-corp-commons/itau-rs7-doc-iulotus.git
+  branch: main
+
+Se a branch main não existir, detecte ou documente que o usuário deve informar a branch correta.
+
+A configuração AWS deve permitir:
+
+* region, com exemplo sa-east-1;
+* s3_bucket placeholder;
+* s3_documents_prefix, por exemplo knowledge-base/documents;
+* s3_manifest_prefix, por exemplo manifests;
+* bedrock_knowledge_base_id placeholder;
+* bedrock_data_source_id placeholder;
+* bedrock_model_arn placeholder para modelo gerador;
+* number_of_results, por exemplo 8.
+
+Permita sobrescrever configurações por variáveis de ambiente quando fizer sentido.
+
+Tarefa 5: Sincronização dos documentos para S3
+Implemente a sincronização dos dois repositórios GitHub de documentação para S3 da forma que achar mais adequada.
+
+A sincronização deve ser pensada para dois modos de uso:
+
+1. atualização manual sob demanda, para quando o usuário quiser refletir rapidamente uma correção ou alteração importante da documentação no RAG;
+2. atualização recorrente semanal, para manter o S3 e a Knowledge Base alinhados com os repositórios de documentação que mudam constantemente.
+
+O código não precisa implementar o agendamento semanal completo se isso depender de infraestrutura externa, mas deve ser estruturado de forma que o mesmo comando/script possa ser usado tanto manualmente quanto por um scheduler aprovado no futuro.
+
+Requisitos funcionais:
+
+1. Ler configuração de repositórios e AWS.
+2. Clonar ou acessar os dois repositórios GitHub de documentação:
+
+   * documentação interna: https://github.com/itau-corp-commons/itau-mr7-doc-documentacao-interna.git
+   * documentação pública: https://github.com/itau-corp-commons/itau-rs7-doc-iulotus.git
+3. Usar pasta temporária do sistema, nunca uma pasta temporária dentro do repo.
+4. Capturar commit SHA de cada repo.
+5. Filtrar arquivos relevantes.
+6. Normalizar:
+
+   * .md e .mdx como markdown;
+   * .txt como texto simples;
+   * .yaml/.yml como markdown com bloco yaml;
+   * .json como markdown com bloco json.
+7. Incluir metadados no documento normalizado, por exemplo:
+
+   * repo;
+   * tipo_documentacao, interna ou publica;
+   * branch;
+   * commit;
+   * arquivo_original;
+   * extensão_original;
+   * data de ingestão.
+8. Enviar os documentos normalizados para S3.
+9. Preservar rastreabilidade do caminho relativo.
+10. Gerar manifest JSON com:
+
+* created_at;
+* repos processados;
+* tipo de documentação;
+* commit por repo;
+* arquivos enviados;
+* sha256 de origem;
+* s3_key;
+* total de documentos.
+
+11. Enviar manifest para S3.
+12. Permitir limpar o prefixo antes de reenviar, se isso for útil.
+13. Ter logs claros.
+14. Tratar erros de forma explícita.
+
+Não fazer chunking local como parte principal da solução. A fragmentação deve ficar preferencialmente sob responsabilidade da Bedrock Knowledge Base, salvo se você justificar tecnicamente outra decisão.
+
+Tarefa 6: Ingestão da Knowledge Base
+Implemente um script ou comando para iniciar a ingestão da Bedrock Knowledge Base.
+
+A ingestão da Knowledge Base deve poder ser acionada após cada sincronização para S3, tanto no fluxo manual sob demanda quanto no fluxo recorrente semanal. O script/comando deve deixar claro que atualizar o S3 sozinho não basta: depois de enviar os documentos ao S3, é necessário iniciar a ingestão/sync da Bedrock Knowledge Base para que o RAG passe a considerar os novos conteúdos.
+
+Requisitos:
+
+1. Ler region, knowledge_base_id e data_source_id de config/env/args.
+2. Usar boto3 client bedrock-agent.
+3. Executar start_ingestion_job.
+4. Imprimir ingestionJobId e status.
+5. Não tentar criar a Knowledge Base via código, a menos que você explique claramente que isso é opcional e separado.
+6. Não tentar criar OpenSearch Serverless via código.
+7. Se ocorrer AccessDenied, mostrar mensagem clara.
+
+Observação importante:
+Ao tentar criar a Knowledge Base pela interface AWS, houve erro de IAM ao criar OpenSearch Serverless por falta de:
+
+* aoss:CreateAccessPolicy
+* aoss:CreateSecurityPolicy
+
+Portanto, assuma que a Knowledge Base e o vector store serão criados pela interface AWS ou pelo time responsável. O código deve focar em sincronizar S3, iniciar ingestão e consultar.
+
+Tarefa 7: Consulta da Knowledge Base
+Implemente um script ou comando para consultar a Knowledge Base.
+
+Requisitos:
+
+1. Ler region, knowledge_base_id, model_arn e number_of_results.
+2. Usar boto3 client bedrock-agent-runtime.
+3. Chamar retrieve_and_generate.
+4. Imprimir resposta.
+5. Imprimir fontes/citações retornadas:
+
+   * s3_uri;
+   * trecho recuperado;
+   * metadados da fonte quando disponíveis.
+6. Receber pergunta por argumento de linha de comando.
+
+Também implemente uma classe reutilizável para o agente, com nome e local que você achar mais adequados.
+
+Responsabilidade da classe:
+
+* receber uma pergunta;
+* consultar a Bedrock Knowledge Base;
+* retornar answer, sources e raw_response opcional.
+
+Tarefa 8: Testes
+Crie testes simples e úteis sem depender de AWS real.
+
+Sugestões:
+
+* testar normalização de .md, .mdx, .txt, .yaml, .yml e .json;
+* testar geração de sha256;
+* testar criação de manifest;
+* testar parsing de config;
+* testar extração de fontes de uma resposta mockada do Bedrock.
+
+Essas sugestões não são obrigatórias. Escolha os testes mais úteis para a estrutura que você implementar.
+
+Tarefa 9: README
+Atualize ou crie README em agents/deploy_agent/ explicando:
+
+1. Abordagem antiga removida:
+
+   * RAG local com TF-IDF foi substituído.
+   * Não há mais índice local versionado.
+   * Não há mais chunks/vectors/joblib no repo.
+
+2. Nova arquitetura:
+   Repositório GitHub de documentação interna + repositório GitHub de documentação pública -> sync script/job -> S3 -> Bedrock Knowledge Base -> agente no SageMaker Studio.
+
+3. Como rodar no SageMaker Studio:
+
+   * instalar dependências;
+   * copiar arquivos .example para arquivos locais reais;
+   * preencher valores necessários;
+   * rodar sincronização para S3;
+   * rodar ingestão da KB;
+   * rodar consulta da KB.
+
+4. Documentar claramente dois fluxos operacionais:
+
+Fluxo manual sob demanda:
+
+* usuário executa sincronização dos dois repositórios de documentação para S3;
+* usuário inicia ingestão/sync da Bedrock Knowledge Base;
+* usuário testa consulta na Knowledge Base.
+
+Fluxo semanal futuro:
+
+* um scheduler aprovado pela squad executa o mesmo processo de sincronização;
+* em seguida, dispara a ingestão da Knowledge Base;
+* esse scheduler não deve depender de GitHub Actions neste momento.
+
+Explique que esse requisito existe porque a documentação interna e pública da IU Lotus é atualizada constantemente, e o RAG precisa acompanhar essas mudanças para evitar respostas baseadas em documentação desatualizada.
+
+5. O que precisa ser criado pela interface AWS ou pelo time cloud/IAM:
+
+   * bucket S3 ou bucket/prefixo autorizado;
+   * acesso aos modelos Bedrock;
+   * Bedrock Knowledge Base;
+   * fonte de dados S3;
+   * modelo de embedding, como Cohere Embed Multilingual v3 se aprovado, ou fallback Amazon Titan Embeddings G2 Text v2;
+   * vector store, como OpenSearch Serverless se aprovado;
+   * permissões IAM necessárias;
+   * se der erro aoss:CreateAccessPolicy ou aoss:CreateSecurityPolicy, é necessário apoio de IAM/cloud.
+
+6. O que o código faz:
+
+   * lê/clona os dois repositórios GitHub de documentação;
+   * normaliza docs;
+   * envia para S3;
+   * cria manifest;
+   * inicia ingestão;
+   * consulta Knowledge Base.
+
+7. O que o código não faz:
+
+   * não cria OpenSearch;
+   * não cria Knowledge Base;
+   * não altera .github/workflows;
+   * não executa deploy;
+   * não faz GMUD;
+   * não faz rollback;
+   * não usa token hardcoded.
+
+Tarefa 10: Criar guia de tarefas da interface AWS
+Crie um arquivo curto, por exemplo:
+
+agents/deploy_agent/AWS_INTERFACE_TODO.md
+
+Esse arquivo deve listar o que eu, humano, devo fazer pela interface AWS ou pedir para o time cloud/IAM.
+
+Itens mínimos:
+
+1. Criar ou validar bucket S3 na mesma região da KB.
+2. Liberar acesso ao Bedrock.
+3. Habilitar modelo de embedding:
+
+   * preferido: Cohere Embed Multilingual v3, se aprovado;
+   * fallback: Amazon Titan Embeddings G2 Text v2.
+4. Criar Bedrock Knowledge Base.
+5. Configurar S3 como data source usando o prefixo correto.
+6. Escolher fragmentação padrão inicialmente.
+7. Criar ou selecionar vector store.
+8. Se usar OpenSearch Serverless e der erro, pedir permissões:
+
+   * aoss:CreateAccessPolicy
+   * aoss:CreateSecurityPolicy
+     ou pedir para o time criar o armazenamento vetorial previamente.
+9. Anotar:
+
+   * AWS_REGION;
+   * S3_BUCKET;
+   * S3_DOCUMENTS_PREFIX;
+   * BEDROCK_KB_ID;
+   * BEDROCK_DATA_SOURCE_ID;
+   * BEDROCK_MODEL_ARN.
+10. Colocar esses valores no config local ou variáveis de ambiente.
+
+Tarefa 11: Dependências
+Ajuste dependências conforme a implementação escolhida.
+
+Em princípio, devem ser necessárias:
+
+* boto3;
+* PyYAML;
+* pytest para dev.
+
+Remova scikit-learn, joblib, numpy e tqdm se forem usadas apenas pela PoC TF-IDF antiga.
+
+Mas confirme antes se essas dependências não são usadas por outro ponto do agente ou do repo.
+
+Tarefa 12: Qualidade e segurança
+
+* Não introduzir segredos.
+* Não colocar tokens, ARNs reais ou IDs reais.
+* Não alterar .github.
+* Não alterar o SDK principal além do necessário para manter o agente isolado.
+* Não remover coisas fora de agents/deploy_agent sem justificar.
+* Antes de apagar arquivos, liste no output quais arquivos serão removidos.
+* Ao final, mostre resumo do que foi alterado e comandos para testar.
+
+Comandos esperados após implementação:
+Defina os comandos finais de acordo com a estrutura que você implementar. Uma ideia inicial seria:
+
+cd agents/deploy_agent
+poetry install
+poetry run python scripts/sync_docs_to_s3.py --rag-config configs/rag_sources.yml --aws-config configs/aws_kb.yml --delete-prefix-first
+poetry run python scripts/start_kb_ingestion.py --aws-config configs/aws_kb.yml
+poetry run python scripts/query_kb.py --aws-config configs/aws_kb.yml "Quais são os pré-requisitos para deploy na IU Lotus?"
+poetry run pytest
+
+Mas se você implementar CLI, Makefile, task runner ou outro padrão melhor, use o padrão melhor e documente os comandos finais.
+
+Resultado esperado:
+O repositório deixa de ter uma PoC local de RAG com TF-IDF e passa a ter uma fundação de agente de deploy integrada à arquitetura AWS:
+
+* sincronização de documentação interna e pública para S3;
+* manifest de auditoria;
+* ingestão em Bedrock Knowledge Base;
+* consulta da Knowledge Base via boto3;
+* documentação clara sobre o que é feito por código;
+* documentação clara sobre o que precisa ser criado ou configurado pela interface AWS;
+* atualização manual sob demanda;
+* preparação para atualização semanal automatizada por mecanismo aprovado pela squad, sem depender de GitHub Actions.
+
+Mais uma vez:
+As estruturas, nomes de arquivos, scripts e módulos sugeridos acima são rascunhos iniciais. Você deve analisar o repositório e tomar a decisão técnica final sobre a melhor implementação.
